@@ -1,0 +1,45 @@
+# =========================================================
+# prod環境用パラメータファイル
+# このファイルの ParameterValue を環境に合わせて修正してください。
+# テンプレート本体 security-dashboard.yaml は原則修正不要です。
+# =========================================================
+
+- ParameterKey: EnvironmentName
+  # TODO: 対象環境名に変更してください。
+  # 例: dev / stg / prod / dr
+  ParameterValue: prod
+
+- ParameterKey: DashboardName
+  # TODO: Dashboard名のベース部分を指定してください。
+  # 実際のDashboard名は security-monthly-report-prod のようになります。
+  ParameterValue: security-monthly-report
+
+- ParameterKey: WafLogGroupName
+  # TODO: WAFログのCloudWatch Logsロググループ名に変更してください。
+  # CloudWatch Logs > Log groups で aws-waf-logs-xxx などを確認します。
+  # 使用Widget:
+  # - WAF BLOCK count by rule daily
+  # - WAF Top blocked client IP
+  # - WAF Top blocked countries
+  ParameterValue: aws-waf-logs-prod-webacl
+
+- ParameterKey: VpcFlowLogGroupName
+  # TODO: VPC Flow Logsのロググループ名に変更してください。
+  # VPC > Flow Logs > 送信先ロググループ で確認します。
+  # 注意: ログ量が多いため、自動更新は避けて月次確認時のみ実行推奨です。
+  ParameterValue: /aws/vpc/flowlogs/prod
+
+- ParameterKey: CloudTrailLogGroupName
+  # TODO: CloudTrailのCloudWatch Logsロググループ名に変更してください。
+  # CloudTrail > Trails > CloudWatch Logs で確認します。
+  ParameterValue: /aws/cloudtrail/prod
+
+- ParameterKey: GuardDutyLogGroupName
+  # TODO: GuardDuty Findingを出力しているロググループ名に変更してください。
+  # 未設定の場合は、EventBridgeでGuardDuty FindingsをCloudWatch Logsへ出す設定が必要です。
+  ParameterValue: /aws/events/guardduty-prod
+
+- ParameterKey: SecurityHubLogGroupName
+  # TODO: SecurityHub Findingを出力しているロググループ名に変更してください。
+  # 未設定の場合は、EventBridgeでSecurityHub FindingsをCloudWatch Logsへ出す設定が必要です。
+  ParameterValue: /aws/events/securityhub-prod
