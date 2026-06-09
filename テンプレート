@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Security monthly report CloudWatch Dashboard
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: prod
+    Description: Environment name. Example prod, stg, dev
+
+  DashboardName:
+    Type: String
+    Default: security-monthly-report-dashboard
+
+  WafLogGroupName:
+    Type: String
+    Description: CloudWatch Logs log group name for AWS WAF logs
+
+  VpcFlowLogGroupName:
+    Type: String
+    Description: CloudWatch Logs log group name for VPC Flow Logs
+
+  CloudTrailLogGroupName:
+    Type: String
+    Description: CloudWatch Logs log group name for CloudTrail logs
+
+  GuardDutyLogGroupName:
+    Type: String
+    Default: ''
+    Description: CloudWatch Logs log group name for GuardDuty findings. Leave blank if unused.
+
+  SecurityHubLogGroupName:
+    Type: String
+    Default: ''
+    Description: CloudWatch Logs log group name for Security Hub findings. Leave blank if unused.
+
+Resources:
+  SecurityMonthlyReportDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${DashboardName}-${EnvironmentName}'
+      DashboardBody: !Sub |
+        {
+          "start": "-P30D",
+          "periodOverride": "inherit",
+          "widgets": [
+            {
+              "type": "text",
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 1,
+              "properties": {
+                "markdown": "# Security Monthly Report Dashboard - ${EnvironmentName}"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 1,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "region": "${AWS::Region}",
+                "title": "WAF - BLOCK count by rule daily",
+                "view": "timeSeries",
+                "query": "SOURCE '${WafLogGroupName}' | fields @timestamp, action, terminatingRuleId | filter action = 'BLOCK' | stats count(*) as block_count by bin(1d), terminatingRuleId | sort bin(1d) asc"
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 1,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "region": "${AWS::Region}",
+                "title": "WAF - Top blocked client IP",
+                "view": "table",
+                "query": "SOURCE '${WafLogGroupName}' | fields @timestamp, action, httpRequest.clientIp | stats count(*) as total_count, sum(action = 'BLOCK') as block_count by httpRequest.clientIp | filter block_count > 0 | display httpRequest.clientIp, total_count, block_count, block_count * 100.0 / total_count as block_rate | sort block_count desc | limit 20"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 7,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "region": "${AWS::Region}",
+                "title": "WAF - Top blocked countries",
+                "view": "table",
+                "query": "SOURCE '${WafLogGroupName}' | fields @timestamp, action, httpRequest.country | stats count(*) as total_count, sum(action = 'BLOCK') as block_count by httpRequest.country | filter block_count > 0 | display httpRequest.country, total_count, block_count, block_count * 100.0 / total_count as block_rate | sort block_count desc | limit 20"
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 7,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "region": "${AWS::Region}",
+                "title": "VPC Flow Logs - Rejected TCP destination ports",
+                "view": "table",
+                "query": "SOURCE '${VpcFlowLogGroupName}' | fields @timestamp, @message | parse @message '* * * * * * * * * * * * * *' as version, account_id, interface_id, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, start, end, action, log_status | filter action = 'REJECT' | filter protocol = 6 | filter dstport in [22,3389,21,23,25,445,1433,1521,3306,5432,6379,9200,27017] | stats count(*) as flow_count, sum(bytes) as total_bytes, avg(bytes) as avg_bytes_per_flow by dstport | sort flow_count desc"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 13,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "region": "${AWS::Region}",
+                "title": "VPC Flow Logs - Rejected UDP destination ports",
+                "view": "table",
+                "query": "SOURCE '${VpcFlowLogGroupName}' | fields @timestamp, @message | parse @message '* * * * * * * * * * * * * *' as version, account_id, interface_id, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, start, end, action, log_status | filter action = 'REJECT' | filter protocol = 17 | filter dstport in [53,123,161,500,4500,6379,9200,27017] | stats count(*) as flow_count, sum(bytes) as total_bytes, avg(bytes) as avg_bytes_per_flow by dstport | sort flow_count desc"
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 13,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "region": "${AWS::Region}",
+                "title": "CloudTrail - Console login failures",
+                "view": "table",
+                "query": "SOURCE '${CloudTrailLogGroupName}' | fields @timestamp, eventName, errorMessage, userIdentity.userName, sourceIPAddress | filter eventName = 'ConsoleLogin' | filter errorMessage like /Failed authentication/ | stats count(*) as failed_count by userIdentity.userName, sourceIPAddress | sort failed_count desc | limit 20"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 19,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "region": "${AWS::Region}",
+                "title": "CloudTrail - Successful console login by source IP",
+                "view": "table",
+                "query": "SOURCE '${CloudTrailLogGroupName}' | fields @timestamp, eventName, responseElements.ConsoleLogin, userIdentity.userName, sourceIPAddress, awsRegion | filter eventName = 'ConsoleLogin' | filter responseElements.ConsoleLogin = 'Success' | stats count(*) as success_count by userIdentity.userName, sourceIPAddress, awsRegion | sort success_count desc | limit 50"
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 19,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "region": "${AWS::Region}",
+                "title": "GuardDuty - Findings by type and severity",
+                "view": "table",
+                "query": "SOURCE '${GuardDutyLogGroupName}' | fields @timestamp, detail.type, detail.severity, detail.title, detail.accountId, detail.region | stats count(*) as finding_count by detail.type, detail.severity | sort finding_count desc"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 25,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "region": "${AWS::Region}",
+                "title": "SecurityHub - CCoE specified controls",
+                "view": "table",
+                "query": "SOURCE '${SecurityHubLogGroupName}' | fields @timestamp, detail.findings.0.Compliance.SecurityControlId, detail.findings.0.Compliance.Status, detail.findings.0.Workflow.Status, detail.findings.0.RecordState | filter detail.findings.0.Compliance.SecurityControlId in ['EC2.1','S3.1','IAM.5','IAM.8'] | filter detail.findings.0.RecordState = 'ACTIVE' | stats count(*) as finding_count by detail.findings.0.Compliance.SecurityControlId, detail.findings.0.Compliance.Status | sort finding_count desc"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 25,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "region": "${AWS::Region}",
+                "title": "Shield Advanced - DDoSDetected",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  [ "AWS/DDoSProtection", "DDoSDetected" ]
+                ],
+                "period": 300,
+                "stat": "Maximum"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  DashboardName:
+    Description: Created CloudWatch Dashboard name
+    Value: !Ref SecurityMonthlyReportDashboard
