@@ -1,0 +1,286 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Export CloudTrail, GuardDuty, and SecurityHub events to CloudWatch Logs for security dashboard.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: dev / stg / prod 等の環境名
+
+  CloudTrailName:
+    Type: String
+    Description: >
+      【要設定】既存CloudTrail名を指定してください。
+      既存TrailにCloudWatch Logs出力設定を追加します。
+
+  CloudTrailLogGroupName:
+    Type: String
+    Default: /aws/cloudtrail/security-dashboard
+    Description: >
+      【要設定】CloudTrail出力先のCloudWatch Logsロググループ名。
+
+  GuardDutyLogGroupName:
+    Type: String
+    Default: /aws/events/guardduty-findings
+    Description: >
+      【要設定】GuardDuty Finding出力先ロググループ名。
+
+  SecurityHubLogGroupName:
+    Type: String
+    Default: /aws/events/securityhub-findings
+    Description: >
+      【要設定】SecurityHub Finding出力先ロググループ名。
+
+  LogRetentionInDays:
+    Type: Number
+    Default: 90
+    AllowedValues:
+      - 30
+      - 60
+      - 90
+      - 120
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1096
+      - 1827
+      - 3653
+    Description: >
+      【要設定】CloudWatch Logsの保持期間。
+      月次レポート用途なら90日程度を推奨。
+
+  EnableGuardDutyExport:
+    Type: String
+    Default: true
+    AllowedValues:
+      - true
+      - false
+    Description: GuardDuty FindingをCloudWatch Logsへ出力するか。
+
+  EnableSecurityHubExport:
+    Type: String
+    Default: true
+    AllowedValues:
+      - true
+      - false
+    Description: SecurityHub FindingをCloudWatch Logsへ出力するか。
+
+Conditions:
+  IsGuardDutyExportEnabled: !Equals [!Ref EnableGuardDutyExport, true]
+  IsSecurityHubExportEnabled: !Equals [!Ref EnableSecurityHubExport, true]
+
+Resources:
+  # =========================================================
+  # CloudTrail -> CloudWatch Logs
+  # =========================================================
+
+  CloudTrailDashboardLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '${CloudTrailLogGroupName}-${EnvironmentName}'
+      RetentionInDays: !Ref LogRetentionInDays
+
+  CloudTrailToCloudWatchLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'CloudTrailToCloudWatchLogsRole-${EnvironmentName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudTrailWriteToCloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${CloudTrailLogGroupName}-${EnvironmentName}:*'
+
+  CloudTrailUpdateFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'CloudTrailUpdateFunctionRole-${EnvironmentName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudTrailUpdatePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudtrail:UpdateTrail
+                  - cloudtrail:GetTrail
+                  - cloudtrail:DescribeTrails
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  CloudTrailUpdateFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'update-cloudtrail-cwlogs-${EnvironmentName}'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CloudTrailUpdateFunctionRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          cloudtrail = boto3.client("cloudtrail")
+
+          def handler(event, context):
+              try:
+                  props = event["ResourceProperties"]
+                  trail_name = props["TrailName"]
+                  log_group_arn = props["CloudWatchLogsLogGroupArn"]
+                  role_arn = props["CloudWatchLogsRoleArn"]
+
+                  if event["RequestType"] in ["Create", "Update"]:
+                      cloudtrail.update_trail(
+                          Name=trail_name,
+                          CloudWatchLogsLogGroupArn=log_group_arn,
+                          CloudWatchLogsRoleArn=role_arn
+                      )
+
+                  # Delete時は既存Trail設定を不用意に消さない
+                  # 必要な場合のみ手動でCloudWatch Logs連携を解除する
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      "TrailName": trail_name
+                  })
+
+              except Exception as e:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {
+                      "Error": str(e)
+                  })
+
+  CloudTrailCloudWatchLogsDelivery:
+    Type: Custom::CloudTrailCloudWatchLogsDelivery
+    DependsOn:
+      - CloudTrailDashboardLogGroup
+      - CloudTrailToCloudWatchLogsRole
+      - CloudTrailUpdateFunction
+    Properties:
+      ServiceToken: !GetAtt CloudTrailUpdateFunction.Arn
+      TrailName: !Ref CloudTrailName
+      CloudWatchLogsLogGroupArn: !GetAtt CloudTrailDashboardLogGroup.Arn
+      CloudWatchLogsRoleArn: !GetAtt CloudTrailToCloudWatchLogsRole.Arn
+
+  # =========================================================
+  # EventBridge -> CloudWatch Logs 共通ResourcePolicy
+  # GuardDuty / SecurityHubのEventBridge RuleがCloudWatch Logsへ
+  # 書き込むために必要
+  # =========================================================
+
+  EventBridgeToCloudWatchLogsResourcePolicy:
+    Type: AWS::Logs::ResourcePolicy
+    Properties:
+      PolicyName: !Sub 'EventBridgeToCloudWatchLogs-${EnvironmentName}'
+      PolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowEventBridgeToPutLogs",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/events/*:*"
+            }
+          ]
+        }
+
+  # =========================================================
+  # GuardDuty -> EventBridge -> CloudWatch Logs
+  # =========================================================
+
+  GuardDutyFindingsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: IsGuardDutyExportEnabled
+    Properties:
+      LogGroupName: !Sub '${GuardDutyLogGroupName}-${EnvironmentName}'
+      RetentionInDays: !Ref LogRetentionInDays
+
+  GuardDutyFindingsEventRule:
+    Type: AWS::Events::Rule
+    Condition: IsGuardDutyExportEnabled
+    DependsOn:
+      - EventBridgeToCloudWatchLogsResourcePolicy
+      - GuardDutyFindingsLogGroup
+    Properties:
+      Name: !Sub 'guardduty-findings-to-cwlogs-${EnvironmentName}'
+      Description: Send GuardDuty findings to CloudWatch Logs.
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.guardduty
+        detail-type:
+          - GuardDuty Finding
+      Targets:
+        - Id: GuardDutyFindingsLogGroup
+          Arn: !GetAtt GuardDutyFindingsLogGroup.Arn
+
+  # =========================================================
+  # SecurityHub -> EventBridge -> CloudWatch Logs
+  # =========================================================
+
+  SecurityHubFindingsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: IsSecurityHubExportEnabled
+    Properties:
+      LogGroupName: !Sub '${SecurityHubLogGroupName}-${EnvironmentName}'
+      RetentionInDays: !Ref LogRetentionInDays
+
+  SecurityHubFindingsEventRule:
+    Type: AWS::Events::Rule
+    Condition: IsSecurityHubExportEnabled
+    DependsOn:
+      - EventBridgeToCloudWatchLogsResourcePolicy
+      - SecurityHubFindingsLogGroup
+    Properties:
+      Name: !Sub 'securityhub-findings-to-cwlogs-${EnvironmentName}'
+      Description: Send Security Hub imported findings to CloudWatch Logs.
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.securityhub
+        detail-type:
+          - Security Hub Findings - Imported
+      Targets:
+        - Id: SecurityHubFindingsLogGroup
+          Arn: !GetAtt SecurityHubFindingsLogGroup.Arn
+
+Outputs:
+  CloudTrailLogGroupName:
+    Value: !Ref CloudTrailDashboardLogGroup
+
+  GuardDutyLogGroupName:
+    Condition: IsGuardDutyExportEnabled
+    Value: !Ref GuardDutyFindingsLogGroup
+
+  SecurityHubLogGroupName:
+    Condition: IsSecurityHubExportEnabled
+    Value: !Ref SecurityHubFindingsLogGroup
