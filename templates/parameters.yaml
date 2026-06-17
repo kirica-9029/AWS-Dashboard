@@ -1,0 +1,40 @@
+# =========================================================
+# prod環境用パラメータ
+# ParameterValueのみ環境に合わせて修正してください。
+# =========================================================
+
+- ParameterKey: EnvironmentName
+  ParameterValue: prod
+
+- ParameterKey: CloudTrailName
+  # TODO: 既存CloudTrail名に変更してください。
+  # CloudTrail > Trails で確認できます。
+  ParameterValue: prod-trail
+
+- ParameterKey: CloudTrailLogGroupName
+  # TODO: CloudTrailのCloudWatch Logs出力先名。
+  # 実際には末尾に -prod が付与されます。
+  ParameterValue: /aws/cloudtrail/security-dashboard
+
+- ParameterKey: GuardDutyLogGroupName
+  # TODO: GuardDuty Finding出力先。
+  # 実際には末尾に -prod が付与されます。
+  ParameterValue: /aws/events/guardduty-findings
+
+- ParameterKey: SecurityHubLogGroupName
+  # TODO: SecurityHub Finding出力先。
+  # 実際には末尾に -prod が付与されます。
+  ParameterValue: /aws/events/securityhub-findings
+
+- ParameterKey: LogRetentionInDays
+  # TODO: ログ保持期間。
+  # 月次レポート用途なら90日推奨。
+  ParameterValue: "90"
+
+- ParameterKey: EnableGuardDutyExport
+  # TODO: GuardDuty未使用環境なら false
+  ParameterValue: "true"
+
+- ParameterKey: EnableSecurityHubExport
+  # TODO: SecurityHub未使用環境なら false
+  ParameterValue: "true"
